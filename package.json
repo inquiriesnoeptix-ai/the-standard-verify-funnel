@@ -1,0 +1,12 @@
+{
+  "name": "forge-verify-bot",
+  "version": "1.0.0",
+  "description": "Verification enforcement bot for The Vault of N",
+  "main": "verify-bot.js",
+  "scripts": {
+    "start": "node verify-bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  }
+}
