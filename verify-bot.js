@@ -6,7 +6,7 @@ const VERIFIED_ROLE_ID = "1443889532956053525";
 const OWNER_ID = "1348246749596094474";
 const KICK_DAY = 0; // Sunday (0=Sun, 1=Mon, etc.)
 const KICK_HOUR = 9;
-const FIRST_DM_DELAY = 10 * 60 * 1000; // 10 minutes
+const FIRST_DM_DELAY = 30 * 1000; // 30 seconds
 const REMINDER_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 const KICK_THRESHOLD_DAYS = 7;
 
