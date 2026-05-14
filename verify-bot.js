@@ -11,7 +11,7 @@ const REMINDER_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 const KICK_THRESHOLD_DAYS = 7; // Unverified kicked after 7 days
 
 // Inactivity thresholds (change these to small numbers for testing)
-const INACTIVITY_WARNING_1_DAYS = 0.000347; // First warning 30 seconds 
+const INACTIVITY_WARNING_1_DAYS = 4; // First warning at 4 days 
 const INACTIVITY_WARNING_2_DAYS = 11;
 const INACTIVITY_KICK_DAYS = 14;
 
