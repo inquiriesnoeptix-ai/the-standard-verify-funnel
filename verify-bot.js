@@ -11,7 +11,7 @@ const REMINDER_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 const KICK_THRESHOLD_DAYS = 7;
 
 // ─── INACTIVITY CONFIG ────────────────────────────────────────────────────────
-const INACTIVITY_WARNING_1_DAYS = 0.000347; // 30 seconds
+const INACTIVITY_WARNING_1_DAYS = 0.000347; // First Warning in 30 seconds
 const INACTIVITY_WARNING_2_DAYS = 11;  // Second warning at 11 days
 const INACTIVITY_KICK_DAYS = 14;       // Kicked at 14 days (fortnightly Sunday)
 
