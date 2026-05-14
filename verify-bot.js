@@ -6,15 +6,19 @@ const VERIFIED_ROLE_ID = "1443889532956053525";
 const OWNER_ID = "1348246749596094474";
 const KICK_DAY = 0; // Sunday
 const KICK_HOUR = 9;
-const FIRST_DM_DELAY = 10 * 60 * 1000; // 10 minutes
+const FIRST_DM_DELAY = 10 * 60 * 1000; // 10 min after joining
 const REMINDER_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
-const KICK_THRESHOLD_DAYS = 7;
+const KICK_THRESHOLD_DAYS = 7; // Unverified kicked after 7 days
 
-// ─── INACTIVITY CONFIG ────────────────────────────────────────────────────────
-const INACTIVITY_WARNING_1_DAYS = 0.000347; // First Warning in 30 seconds
-const INACTIVITY_WARNING_2_DAYS = 11;  // Second warning at 11 days
-const INACTIVITY_KICK_DAYS = 14;       // Kicked at 14 days (fortnightly Sunday)
+// Inactivity thresholds (change these to small numbers for testing)
+const INACTIVITY_WARNING_1_DAYS = 0.000347; // First warning 30 seconds 
+const INACTIVITY_WARNING_2_DAYS = 11;
+const INACTIVITY_KICK_DAYS = 14;
 
+// How often to check inactivity (every 6 hours in production)
+const INACTIVITY_CHECK_INTERVAL = 6 * 60 * 60 * 1000;
+
+// ─── CLIENT ──────────────────────────────────────────────────────────────────
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -25,13 +29,13 @@ const client = new Client({
   ],
 });
 
-// Track last message timestamp per verified member
-const lastMessageTime = new Map();
+// Storage
+const lastMessageTime = new Map(); // userId → timestamp
+const reminderCounts = new Map();  // userId → count
+const pendingTimers = new Map();   // userId → [timers]
+const warningSent = new Map();     // userId → { w1: bool, w2: bool }
 
-const reminderCounts = new Map();
-const pendingTimers = new Map();
-
-// ─── UNVERIFIED DM MESSAGES ───────────────────────────────────────────────────
+// ─── MESSAGES: UNVERIFIED ────────────────────────────────────────────────────
 
 const FIRST_DM = `You joined the server. You haven't verified.
 
@@ -53,7 +57,7 @@ If you can't do that, this isn't the place for you. And that's not an insult —
 const REMINDER_DMS = [
   `Still not verified.
 
-You've been in the server for over a day now and you haven't done the one thing that was asked of you — verify.
+You've been in the server for over a day now and you haven't done the one thing asked of you — verify.
 
 You know what that tells me? You're the same person in here that you are out there. Someone who knows what to do but doesn't do it.
 
@@ -77,14 +81,14 @@ If you can't commit to clicking one button, how are you going to commit to chang
 
   `You're still here. Still unverified. Still proving nothing.
 
-Sunday morning the kick wave runs. Unverified members get removed. No exceptions. No second chances after that.
+Sunday the kick wave runs. Unverified members are removed. No exceptions. No second chances.
 
 This is not a threat. It's the standard. Either meet it or accept that you weren't ready.
 
 **#verification** → VERIFY. Last chance.`,
 ];
 
-const KICK_DM = `You were removed from The Vault of N.
+const UNVERIFIED_KICK_DM = `You were removed from The Vault of N.
 
 Not because we don't want you here. Because you didn't want to be here enough to verify.
 
@@ -106,7 +110,7 @@ That's it. 5 steps. Under 10 minutes.
 
 The only thing standing between you and access is whether you actually do it.`;
 
-// ─── INACTIVITY DM MESSAGES ───────────────────────────────────────────────────
+// ─── MESSAGES: INACTIVITY ────────────────────────────────────────────────────
 
 const INACTIVITY_WARNING_1 = `Just so you know — we don't keep idlers in The Vault of N.
 
@@ -120,7 +124,7 @@ Show up or step out.`;
 
 const INACTIVITY_WARNING_2 = `This is your last warning.
 
-You've been inactive for 11 days. Zero messages. Zero proof you're actually here.
+You've been inactive for too long. Zero messages. Zero proof you're actually here.
 
 Sunday is the kick wave. You will be removed if nothing changes before then.
 
@@ -142,15 +146,17 @@ If you ever come back ready to actually show up, you know where to find us.
 
 The standard doesn't lower. You rise to it or you don't.`;
 
-// ─── TRACK MESSAGES FROM VERIFIED MEMBERS ────────────────────────────────────
+// ─── TRACK MESSAGES ──────────────────────────────────────────────────────────
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // Track last message time for verified members in guild
+  // Track verified members' last message time
   if (message.guild) {
     const member = message.guild.members.cache.get(message.author.id);
     if (member && member.roles.cache.has(VERIFIED_ROLE_ID)) {
       lastMessageTime.set(message.author.id, Date.now());
+      // Reset warning flags if they post again
+      warningSent.set(message.author.id, { w1: false, w2: false });
     }
   }
 
@@ -158,39 +164,31 @@ client.on("messageCreate", async (message) => {
   if (!message.guild) {
     const content = message.content.toLowerCase();
     if (
-      content.includes("how") &&
-      (content.includes("verify") || content.includes("verification"))
-    ) {
-      await message.reply(HOW_TO_VERIFY);
-    } else if (
       content.includes("verify") ||
+      content.includes("how") ||
       content.includes("help") ||
-      content.includes("what do i do") ||
-      content.includes("steps")
+      content.includes("steps") ||
+      content.includes("what do i do")
     ) {
-      await message.reply(HOW_TO_VERIFY);
+      try { await message.reply(HOW_TO_VERIFY); } catch (err) {}
     }
   }
 });
 
-// ─── HANDLE NEW MEMBERS ──────────────────────────────────────────────────────
+// ─── NEW MEMBER ──────────────────────────────────────────────────────────────
 client.on("guildMemberAdd", (member) => {
   if (member.user.bot) return;
-
-  console.log(`[VERIFY] New member joined: ${member.user.tag}`);
+  console.log(`[VERIFY] New member: ${member.user.tag}`);
 
   const firstTimer = setTimeout(async () => {
     const freshMember = await member.guild.members.fetch(member.id).catch(() => null);
-    if (!freshMember || freshMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-      console.log(`[VERIFY] ${member.user.tag} already verified — skipping DM`);
-      return;
-    }
+    if (!freshMember || freshMember.roles.cache.has(VERIFIED_ROLE_ID)) return;
 
     try {
       await member.send(FIRST_DM);
-      console.log(`[VERIFY] Sent first DM to ${member.user.tag}`);
+      console.log(`[VERIFY] First DM sent to ${member.user.tag}`);
     } catch (err) {
-      console.log(`[VERIFY] Can't DM ${member.user.tag} — DMs disabled`);
+      console.log(`[VERIFY] Can't DM ${member.user.tag}`);
     }
 
     reminderCounts.set(member.id, 0);
@@ -200,27 +198,24 @@ client.on("guildMemberAdd", (member) => {
   pendingTimers.set(member.id, [firstTimer]);
 });
 
-// ─── REMINDER LOOP (UNVERIFIED) ───────────────────────────────────────────────
+// ─── UNVERIFIED REMINDER LOOP ─────────────────────────────────────────────────
 function startReminderLoop(member) {
   const interval = setInterval(async () => {
     const freshMember = await member.guild.members.fetch(member.id).catch(() => null);
 
     if (!freshMember || freshMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-      console.log(`[VERIFY] ${member.user.tag} verified or left — stopping reminders`);
       clearInterval(interval);
       reminderCounts.delete(member.id);
       return;
     }
 
     const count = reminderCounts.get(member.id) || 0;
-    const messageIndex = Math.min(count, REMINDER_DMS.length - 1);
+    const msgIndex = Math.min(count, REMINDER_DMS.length - 1);
 
     try {
-      await member.send(REMINDER_DMS[messageIndex]);
-      console.log(`[VERIFY] Sent reminder #${count + 1} to ${member.user.tag}`);
-    } catch (err) {
-      console.log(`[VERIFY] Can't DM ${member.user.tag} — DMs disabled`);
-    }
+      await member.send(REMINDER_DMS[msgIndex]);
+      console.log(`[VERIFY] Reminder #${count + 1} → ${member.user.tag}`);
+    } catch (err) {}
 
     reminderCounts.set(member.id, count + 1);
   }, REMINDER_INTERVAL);
@@ -230,112 +225,30 @@ function startReminderLoop(member) {
   pendingTimers.set(member.id, timers);
 }
 
-// ─── STOP REMINDERS WHEN THEY VERIFY ─────────────────────────────────────────
+// ─── VERIFIED — CLEAR TIMERS ─────────────────────────────────────────────────
 client.on("guildMemberUpdate", (oldMember, newMember) => {
-  if (!oldMember.roles.cache.has(VERIFIED_ROLE_ID) && newMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-    console.log(`[VERIFY] ${newMember.user.tag} just verified — clearing timers`);
-    const timers = pendingTimers.get(newMember.id);
-    if (timers) {
-      timers.forEach((t) => {
-        clearTimeout(t);
-        clearInterval(t);
-      });
-      pendingTimers.delete(newMember.id);
-    }
-    reminderCounts.delete(newMember.id);
-    // Start tracking their activity from verification
-    lastMessageTime.set(newMember.id, Date.now());
+  const justVerified = !oldMember.roles.cache.has(VERIFIED_ROLE_ID) && newMember.roles.cache.has(VERIFIED_ROLE_ID);
+  if (!justVerified) return;
+
+  console.log(`[VERIFY] ${newMember.user.tag} verified — clearing timers`);
+
+  const timers = pendingTimers.get(newMember.id);
+  if (timers) {
+    timers.forEach((t) => { clearTimeout(t); clearInterval(t); });
+    pendingTimers.delete(newMember.id);
   }
+  reminderCounts.delete(newMember.id);
+
+  // Start tracking from verification
+  lastMessageTime.set(newMember.id, Date.now());
+  warningSent.set(newMember.id, { w1: false, w2: false });
 });
 
-// ─── FORTNIGHTLY KICK WAVE (UNVERIFIED) ──────────────────────────────────────
-async function kickWave() {
-  console.log("[VERIFY] ⚔️ UNVERIFIED KICK WAVE STARTING...");
-
-  const guilds = client.guilds.cache;
-  let totalKicked = 0;
-  const kickedUsers = [];
-
-  for (const [, guild] of guilds) {
-    const members = await guild.members.fetch();
-
-    for (const [, member] of members) {
-      if (member.user.bot) continue;
-      if (member.roles.cache.has(VERIFIED_ROLE_ID)) continue;
-
-      const joinedAt = member.joinedAt;
-      const daysSinceJoin = (Date.now() - joinedAt) / (1000 * 60 * 60 * 24);
-
-      if (daysSinceJoin >= KICK_THRESHOLD_DAYS) {
-        try { await member.send(KICK_DM); } catch (err) {}
-
-        try {
-          await member.kick("Unverified after 7+ days");
-          kickedUsers.push(`${member.user.tag} — ${daysSinceJoin.toFixed(0)} days unverified`);
-          totalKicked++;
-        } catch (err) {
-          console.log(`[VERIFY] Failed to kick ${member.user.tag}:`, err.message);
-        }
-
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    }
-  }
-
-  console.log(`[VERIFY] ⚔️ UNVERIFIED KICK WAVE COMPLETE — ${totalKicked} removed`);
-  return { totalKicked, kickedUsers };
-}
-
-// ─── FORTNIGHTLY KICK WAVE (INACTIVE VERIFIED) ────────────────────────────────
-async function inactivityKickWave() {
-  console.log("[VERIFY] 💀 INACTIVITY KICK WAVE STARTING...");
-
-  const guilds = client.guilds.cache;
-  let totalKicked = 0;
-  const kickedUsers = [];
-
-  for (const [, guild] of guilds) {
-    const members = await guild.members.fetch();
-
-    for (const [, member] of members) {
-      if (member.user.bot) continue;
-      if (!member.roles.cache.has(VERIFIED_ROLE_ID)) continue;
-
-      const lastMsg = lastMessageTime.get(member.id);
-      const joinedAt = member.joinedAt;
-
-      // Use last message time or join time, whichever is more recent
-      const lastActivity = lastMsg || joinedAt.getTime();
-      const daysSinceActivity = (Date.now() - lastActivity) / (1000 * 60 * 60 * 24);
-
-      if (daysSinceActivity >= INACTIVITY_KICK_DAYS) {
-        try { await member.send(INACTIVITY_KICK_DM); } catch (err) {}
-
-        try {
-          await member.kick("Inactive verified member — 14+ days no messages");
-          kickedUsers.push(`${member.user.tag} — ${daysSinceActivity.toFixed(0)} days inactive`);
-          totalKicked++;
-          lastMessageTime.delete(member.id);
-        } catch (err) {
-          console.log(`[VERIFY] Failed to kick ${member.user.tag}:`, err.message);
-        }
-
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    }
-  }
-
-  console.log(`[VERIFY] 💀 INACTIVITY KICK WAVE COMPLETE — ${totalKicked} removed`);
-  return { totalKicked, kickedUsers };
-}
-
-// ─── INACTIVITY WARNING CHECKER (RUNS DAILY) ─────────────────────────────────
+// ─── INACTIVITY CHECKER ──────────────────────────────────────────────────────
 async function checkInactivityWarnings() {
-  console.log("[VERIFY] 🔍 Checking inactivity warnings...");
+  console.log("[VERIFY] 🔍 Checking inactivity...");
 
-  const guilds = client.guilds.cache;
-
-  for (const [, guild] of guilds) {
+  for (const [, guild] of client.guilds.cache) {
     const members = await guild.members.fetch();
 
     for (const [, member] of members) {
@@ -343,81 +256,122 @@ async function checkInactivityWarnings() {
       if (!member.roles.cache.has(VERIFIED_ROLE_ID)) continue;
 
       const lastMsg = lastMessageTime.get(member.id);
-      const joinedAt = member.joinedAt;
-      const lastActivity = lastMsg || joinedAt.getTime();
-      const daysSinceActivity = (Date.now() - lastActivity) / (1000 * 60 * 60 * 24);
+      const lastActivity = lastMsg || member.joinedAt.getTime();
+      const daysSince = (Date.now() - lastActivity) / (1000 * 60 * 60 * 24);
 
-      // Day 4 warning
-      if (daysSinceActivity >= INACTIVITY_WARNING_1_DAYS && daysSinceActivity < INACTIVITY_WARNING_1_DAYS + 1) {
+      const warnings = warningSent.get(member.id) || { w1: false, w2: false };
+
+      // Warning 1 — Day 4
+      if (daysSince >= INACTIVITY_WARNING_1_DAYS && !warnings.w1) {
         try {
           await member.send(INACTIVITY_WARNING_1);
-          console.log(`[VERIFY] Sent inactivity warning 1 to ${member.user.tag}`);
-        } catch (err) {
-          console.log(`[VERIFY] Can't DM ${member.user.tag}`);
-        }
+          console.log(`[VERIFY] Warning 1 → ${member.user.tag} (${daysSince.toFixed(1)} days inactive)`);
+          warnings.w1 = true;
+          warningSent.set(member.id, warnings);
+        } catch (err) {}
       }
 
-      // Day 11 warning
-      if (daysSinceActivity >= INACTIVITY_WARNING_2_DAYS && daysSinceActivity < INACTIVITY_WARNING_2_DAYS + 1) {
+      // Warning 2 — Day 11
+      if (daysSince >= INACTIVITY_WARNING_2_DAYS && !warnings.w2) {
         try {
           await member.send(INACTIVITY_WARNING_2);
-          console.log(`[VERIFY] Sent inactivity warning 2 to ${member.user.tag}`);
-        } catch (err) {
-          console.log(`[VERIFY] Can't DM ${member.user.tag}`);
-        }
+          console.log(`[VERIFY] Warning 2 → ${member.user.tag} (${daysSince.toFixed(1)} days inactive)`);
+          warnings.w2 = true;
+          warningSent.set(member.id, warnings);
+        } catch (err) {}
       }
     }
   }
 }
 
-// ─── COMBINED SUNDAY WAVE ─────────────────────────────────────────────────────
+// ─── SUNDAY KICK WAVE ─────────────────────────────────────────────────────────
 async function sundayWave() {
-  const unverifiedResult = await kickWave();
-  await new Promise((r) => setTimeout(r, 5000));
-  const inactiveResult = await inactivityKickWave();
+  console.log("[VERIFY] ⚔️ SUNDAY WAVE STARTING...");
 
-  // Send combined report to owner
+  const unverifiedKicked = [];
+  const inactiveKicked = [];
+
+  for (const [, guild] of client.guilds.cache) {
+    const members = await guild.members.fetch();
+
+    for (const [, member] of members) {
+      if (member.user.bot) continue;
+
+      const isVerified = member.roles.cache.has(VERIFIED_ROLE_ID);
+      const daysSinceJoin = (Date.now() - member.joinedAt) / (1000 * 60 * 60 * 24);
+
+      // Kick unverified after 7 days
+      if (!isVerified && daysSinceJoin >= KICK_THRESHOLD_DAYS) {
+        try { await member.send(UNVERIFIED_KICK_DM); } catch (err) {}
+        try {
+          await member.kick("Unverified after 7+ days");
+          unverifiedKicked.push(`${member.user.tag} — ${daysSinceJoin.toFixed(0)} days`);
+          console.log(`[VERIFY] Kicked unverified: ${member.user.tag}`);
+        } catch (err) {}
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+
+      // Kick inactive verified after 14 days
+      if (isVerified) {
+        const lastMsg = lastMessageTime.get(member.id);
+        const lastActivity = lastMsg || member.joinedAt.getTime();
+        const daysSinceActivity = (Date.now() - lastActivity) / (1000 * 60 * 60 * 24);
+
+        if (daysSinceActivity >= INACTIVITY_KICK_DAYS) {
+          try { await member.send(INACTIVITY_KICK_DM); } catch (err) {}
+          try {
+            await member.kick("Inactive 14+ days — no messages");
+            inactiveKicked.push(`${member.user.tag} — ${daysSinceActivity.toFixed(0)} days inactive`);
+            lastMessageTime.delete(member.id);
+            warningSent.delete(member.id);
+            console.log(`[VERIFY] Kicked inactive: ${member.user.tag}`);
+          } catch (err) {}
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+    }
+  }
+
+  // Send report to owner
   try {
     const owner = await client.users.fetch(OWNER_ID);
+    const total = unverifiedKicked.length + inactiveKicked.length;
 
-    const totalKicked = unverifiedResult.totalKicked + inactiveResult.totalKicked;
-
-    if (totalKicked > 0) {
-      let description = "";
-
-      if (unverifiedResult.kickedUsers.length > 0) {
-        description += `**Unverified (${unverifiedResult.totalKicked}):**\n`;
-        description += unverifiedResult.kickedUsers.map((u, i) => `${i + 1}. ${u}`).join("\n");
-        description += "\n\n";
+    if (total > 0) {
+      let desc = "";
+      if (unverifiedKicked.length > 0) {
+        desc += `**Unverified removed (${unverifiedKicked.length}):**\n`;
+        desc += unverifiedKicked.map((u, i) => `${i + 1}. ${u}`).join("\n") + "\n\n";
+      }
+      if (inactiveKicked.length > 0) {
+        desc += `**Inactive verified removed (${inactiveKicked.length}):**\n`;
+        desc += inactiveKicked.map((u, i) => `${i + 1}. ${u}`).join("\n");
       }
 
-      if (inactiveResult.kickedUsers.length > 0) {
-        description += `**Inactive Verified (${inactiveResult.totalKicked}):**\n`;
-        description += inactiveResult.kickedUsers.map((u, i) => `${i + 1}. ${u}`).join("\n");
-      }
-
-      const report = new EmbedBuilder()
+      const embed = new EmbedBuilder()
         .setColor(0xe74c3c)
         .setTitle("⚔️ SUNDAY KICK WAVE REPORT")
-        .setDescription(`**${totalKicked} total removed.**\n\n${description}`)
+        .setDescription(`**${total} total removed.**\n\n${desc}`)
         .setFooter({ text: "The Vault of N — The Standard" })
         .setTimestamp();
 
-      await owner.send({ embeds: [report] });
+      await owner.send({ embeds: [embed] });
     } else {
-      await owner.send("⚔️ **Sunday Kick Wave Complete** — No members removed this week. Clean house.");
+      await owner.send("⚔️ **Sunday Wave Complete** — No members removed. Clean house.");
     }
   } catch (err) {
-    console.log("[VERIFY] Couldn't DM owner:", err.message);
+    console.log("[VERIFY] Couldn't DM owner report");
   }
+
+  console.log("[VERIFY] ⚔️ SUNDAY WAVE COMPLETE");
 }
 
-// ─── SCHEDULER ───────────────────────────────────────────────────────────────
-function scheduleKickWave() {
+// ─── SCHEDULE ─────────────────────────────────────────────────────────────────
+function schedule() {
+  // Schedule Sunday 9AM kick wave
   const now = new Date();
   const next = new Date();
   next.setHours(KICK_HOUR, 0, 0, 0);
-
   const daysUntilSunday = (KICK_DAY - now.getDay() + 7) % 7;
   next.setDate(now.getDate() + (daysUntilSunday === 0 && now >= next ? 7 : daysUntilSunday));
 
@@ -426,25 +380,18 @@ function scheduleKickWave() {
 
   setTimeout(() => {
     sundayWave();
-    setInterval(sundayWave, 14 * 24 * 60 * 60 * 1000); // Fortnightly
+    setInterval(sundayWave, 7 * 24 * 60 * 60 * 1000); // Weekly
   }, msUntilKick);
 
-  // Daily inactivity warning check at 10AM
-  const nextCheck = new Date();
-  nextCheck.setHours(10, 0, 0, 0);
-  if (now >= nextCheck) nextCheck.setDate(nextCheck.getDate() + 1);
-  const msUntilCheck = nextCheck - now;
-
-  setTimeout(() => {
-    checkInactivityWarnings();
-    setInterval(checkInactivityWarnings, 24 * 60 * 60 * 1000);
-  }, msUntilCheck);
+  // Run inactivity check every 6 hours starting now
+  checkInactivityWarnings();
+  setInterval(checkInactivityWarnings, INACTIVITY_CHECK_INTERVAL);
 }
 
-// ─── BOT READY ───────────────────────────────────────────────────────────────
-client.once("ready", () => {
+// ─── READY ────────────────────────────────────────────────────────────────────
+client.once("clientReady", () => {
   console.log(`[Bot] The Standard online as ${client.user.tag}`);
-  scheduleKickWave();
+  schedule();
 });
 
 client.login(DISCORD_TOKEN);
