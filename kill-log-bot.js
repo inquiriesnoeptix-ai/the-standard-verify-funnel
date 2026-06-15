@@ -6,8 +6,8 @@ const fs = require('fs');
 // ─────────────────────────────────────────────
 const CONFIG = {
   token: process.env.DISCORD_TOKEN,                // set in .env
-  killLogChannelId: 'YOUR_KILL_LOG_CHANNEL_ID',    // #daily-kill-log channel ID
-  announcementsChannelId: 'YOUR_ANNOUNCEMENTS_CHANNEL_ID', // #announcements channel ID
+  killLogChannelId: '1443535884111843329',
+  announcementsChannelId: '1443535559321587773',
   dataFile: './logs.json',                          // where user data is saved
 
   // Role IDs + day thresholds
@@ -44,24 +44,24 @@ function saveData(data) {
 }
 
 // ─────────────────────────────────────────────
-// PATTERN CHECK — is this a valid kill log?
-// Looks for lines starting with ✔️ or ❌
+// PATTERN CHECK — is this a valid log?
+// ONLY tick/cross lines allowed — no random text
+// Every non-empty line must be a tick or cross
 // ─────────────────────────────────────────────
 function isValidKillLog(content) {
   const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-  // Need at least 1 line that starts with a tick or cross
-  const logLines = lines.filter(line =>
-    line.startsWith('✔️') || line.startsWith('❌') ||
-    line.startsWith('✅') || line.startsWith('✗') ||
-    line.startsWith('☑') || line.startsWith('✓')
+  // Must have at least 3 lines
+  if (lines.length < 3) return false;
+
+  // Every single line must contain a tick or cross — no random text allowed
+  const allLinesAreLog = lines.every(line =>
+    line.includes('✔️') || line.includes('❌') ||
+    line.includes('✅') || line.includes('✗') ||
+    line.includes('☑') || line.includes('✓')
   );
 
-  // Must have at least 1 tick/cross line, and the majority of lines should be log lines
-  // (allows for a header line like "Today's log:" at the top)
-  if (logLines.length === 0) return false;
-  if (lines.length <= 2) return logLines.length >= 1;
-  return logLines.length >= Math.ceil(lines.length * 0.5);
+  return allLinesAreLog;
 }
 
 // ─────────────────────────────────────────────
