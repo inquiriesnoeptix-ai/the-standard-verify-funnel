@@ -91,14 +91,11 @@ async function checkAndAssignRoles(member, totalDays, guild, announcementsChanne
     try {
       const embed = new EmbedBuilder()
         .setColor(getRoleColor(earned.days))
-        .setTitle(`🏆 ${earned.label} Achieved!`)
-        .setDescription(
-          `${member} has been logging consistently and just earned the **${earned.label}** role!\n\n` +
-          `**${totalDays} days** of kill logs submitted. Keep it up! 🔥`
-        )
+        .setTitle(getAnnouncementTitle(earned.days))
+        .setDescription(getAnnouncementText(member, earned.days))
         .setThumbnail(member.user.displayAvatarURL({ dynamic: true }))
         .setTimestamp()
-        .setFooter({ text: 'Daily Kill Log Tracker' });
+        .setFooter({ text: 'The Standard — Daily Log Tracker' });
 
       await announcementsChannel.send({ embeds: [embed] });
       console.log(`Announced role "${earned.label}" for ${member.user.tag}`);
@@ -106,6 +103,24 @@ async function checkAndAssignRoles(member, totalDays, guild, announcementsChanne
       console.error('Failed to send announcement:', e);
     }
   }
+}
+
+function getAnnouncementTitle(days) {
+  if (days >= 100) return '🐐 100 Day Log Streak!';
+  if (days >= 50)  return '🏆 50 Day Log Streak!';
+  if (days >= 30)  return '👑 30 Day Log Streak!';
+  if (days >= 14)  return '💪 14 Day Log Streak!';
+  if (days >= 7)   return '⚡ 7 Day Log Streak!';
+  return '🔥 3 Day Log Streak!';
+}
+
+function getAnnouncementText(member, days) {
+  if (days >= 100) return `${member}. 100 days. No days off. While everyone else was talking, you were logging. This is what The Standard looks like.`;
+  if (days >= 50)  return `${member} is built different. 50 days of showing up without excuses. This is what separates the ones who make it.`;
+  if (days >= 30)  return `${member} just hit a month straight. Do you know how rare this is? The standard is being set.`;
+  if (days >= 14)  return `${member} is 2 weeks deep. This isn't luck anymore — this is discipline.`;
+  if (days >= 7)   return `${member} has been locked in for a full week. Most people quit by now. You didn't.`;
+  return `${member} is showing up. 3 days logged and the streak has begun. Don't stop now.`;
 }
 
 function getRoleColor(days) {
